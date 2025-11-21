@@ -8,7 +8,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch import optim
-from torch.optim import lr_scheduler 
+from torch.optim import lr_scheduler
+from utils.losses import NoiseAdaptiveHybridHuber
 
 import os
 import time
@@ -48,8 +49,12 @@ class Exp_Main(Exp_Basic):
         return model_optim
 
     def _select_criterion(self):
-        criterion = nn.MSELoss()
-        return criterion
+        if str(self.args.loss).lower() in ['vahuber', 'volatility_huber', 'adaptive_huber']:
+            return NoiseAdaptiveHybridHuber(
+                delta=self.args.vahuber_delta,
+                gamma=self.args.vahuber_gamma,
+            )
+        return nn.MSELoss()
 
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
@@ -87,12 +92,15 @@ class Exp_Main(Exp_Basic):
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
                 batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
 
-                pred = outputs.detach().cpu()
-                true = batch_y.detach().cpu()
+                pred = outputs
+                true = batch_y
 
-                loss = criterion(pred, true)
+                if getattr(criterion, 'requires_volatility', False):
+                    loss = criterion(pred, true, x_for_volatility=true)
+                else:
+                    loss = criterion(pred, true)
 
-                total_loss.append(loss)
+                total_loss.append(loss.item())
         total_loss = np.average(total_loss)
         self.model.train()
         return total_loss
@@ -156,7 +164,10 @@ class Exp_Main(Exp_Basic):
                         f_dim = -1 if self.args.features == 'MS' else 0
                         outputs = outputs[:, -self.args.pred_len:, f_dim:]
                         batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-                        loss = criterion(outputs, batch_y)
+                        if getattr(criterion, 'requires_volatility', False):
+                            loss = criterion(outputs, batch_y, x_for_volatility=batch_y)
+                        else:
+                            loss = criterion(outputs, batch_y)
                         train_loss.append(loss.item())
                 else:
                     if 'Linear' in self.args.model or 'TST' in self.args.model:
@@ -171,7 +182,10 @@ class Exp_Main(Exp_Basic):
                     f_dim = -1 if self.args.features == 'MS' else 0
                     outputs = outputs[:, -self.args.pred_len:, f_dim:]
                     batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-                    loss = criterion(outputs, batch_y)
+                    if getattr(criterion, 'requires_volatility', False):
+                        loss = criterion(outputs, batch_y, x_for_volatility=batch_y)
+                    else:
+                        loss = criterion(outputs, batch_y)
                     train_loss.append(loss.item())
 
                 if (i + 1) % 100 == 0:

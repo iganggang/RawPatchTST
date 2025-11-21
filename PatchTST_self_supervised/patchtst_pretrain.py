@@ -13,6 +13,7 @@ from src.callback.patch_mask import *
 from src.callback.transforms import *
 from src.metrics import *
 from src.basics import set_device
+from src.losses import NoiseAdaptiveHybridHuber
 from datautils import *
 
 
@@ -44,6 +45,9 @@ parser.add_argument('--mask_ratio', type=float, default=0.4, help='masking ratio
 # Optimization args
 parser.add_argument('--n_epochs_pretrain', type=int, default=10, help='number of pre-training epochs')
 parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
+parser.add_argument('--loss', type=str, default='vahuber', help='loss function: mse or vahuber')
+parser.add_argument('--vahuber_delta', type=float, default=1.0, help='delta for volatility-adaptive Huber loss')
+parser.add_argument('--vahuber_gamma', type=float, default=1.0, help='gamma for volatility-adaptive weighting')
 # model id to keep track of the number of models saved
 parser.add_argument('--pretrained_model_id', type=int, default=1, help='id of the saved pretrained model')
 parser.add_argument('--model_type', type=str, default='based_model', help='for multivariate model or univariate model')
@@ -90,15 +94,21 @@ def get_model(c_in, args):
     return model
 
 
+def get_loss_func(args, reduction: str = 'mean'):
+    if str(args.loss).lower() == 'mse':
+        return torch.nn.MSELoss(reduction=reduction)
+    return NoiseAdaptiveHybridHuber(delta=args.vahuber_delta, gamma=args.vahuber_gamma, reduction=reduction)
+
+
 def find_lr():
     # get dataloader
-    dls = get_dls(args)    
+    dls = get_dls(args)
     model = get_model(dls.vars, args)
     # get loss
-    loss_func = torch.nn.MSELoss(reduction='mean')
+    loss_func = get_loss_func(args, reduction='none')
     # get callbacks
     cbs = [RevInCB(dls.vars, denorm=False)] if args.revin else []
-    cbs += [PatchMaskCB(patch_len=args.patch_len, stride=args.stride, mask_ratio=args.mask_ratio)]
+    cbs += [PatchMaskCB(patch_len=args.patch_len, stride=args.stride, mask_ratio=args.mask_ratio, loss_func=loss_func)]
         
     # define learner
     learn = Learner(dls, model, 
@@ -118,12 +128,12 @@ def pretrain_func(lr=args.lr):
     # get model     
     model = get_model(dls.vars, args)
     # get loss
-    loss_func = torch.nn.MSELoss(reduction='mean')
+    loss_func = get_loss_func(args, reduction='none')
     # get callbacks
     cbs = [RevInCB(dls.vars, denorm=False)] if args.revin else []
     cbs += [
-         PatchMaskCB(patch_len=args.patch_len, stride=args.stride, mask_ratio=args.mask_ratio),
-         SaveModelCB(monitor='valid_loss', fname=args.save_pretrained_model,                       
+         PatchMaskCB(patch_len=args.patch_len, stride=args.stride, mask_ratio=args.mask_ratio, loss_func=loss_func),
+         SaveModelCB(monitor='valid_loss', fname=args.save_pretrained_model,
                         path=args.save_path)
         ]
     # define learner

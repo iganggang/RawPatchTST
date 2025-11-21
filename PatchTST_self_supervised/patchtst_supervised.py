@@ -8,6 +8,7 @@ from torch import nn
 
 from src.models.patchTST import PatchTST
 from src.learner import Learner
+from src.losses import NoiseAdaptiveHybridHuber
 from src.callback.core import *
 from src.callback.tracking import *
 from src.callback.scheduler import *
@@ -44,6 +45,9 @@ parser.add_argument('--head_dropout', type=float, default=0, help='head dropout'
 # Optimization args
 parser.add_argument('--n_epochs', type=int, default=20, help='number of training epochs')
 parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
+parser.add_argument('--loss', type=str, default='vahuber', help='loss function: mse or vahuber')
+parser.add_argument('--vahuber_delta', type=float, default=1.0, help='delta for volatility-adaptive Huber loss')
+parser.add_argument('--vahuber_gamma', type=float, default=1.0, help='gamma for volatility-adaptive weighting')
 # model id to keep track of the number of models saved
 parser.add_argument('--model_id', type=int, default=1, help='id of the saved model')
 parser.add_argument('--model_type', type=str, default='based_model', help='for multivariate model or univariate model')
@@ -86,12 +90,18 @@ def get_model(c_in, args):
     return model
 
 
+def get_loss_func(args):
+    if str(args.loss).lower() == 'mse':
+        return torch.nn.MSELoss(reduction='mean')
+    return NoiseAdaptiveHybridHuber(delta=args.vahuber_delta, gamma=args.vahuber_gamma)
+
+
 def find_lr():
     # get dataloader
-    dls = get_dls(args)    
+    dls = get_dls(args)
     model = get_model(dls.vars, args)
     # get loss
-    loss_func = torch.nn.MSELoss(reduction='mean')
+    loss_func = get_loss_func(args)
     # get callbacks
     cbs = [RevInCB(dls.vars)] if args.revin else []
     cbs += [PatchCB(patch_len=args.patch_len, stride=args.stride)]
@@ -110,7 +120,7 @@ def train_func(lr=args.lr):
     model = get_model(dls.vars, args)
 
     # get loss
-    loss_func = torch.nn.MSELoss(reduction='mean')
+    loss_func = get_loss_func(args)
 
     # get callbacks
     cbs = [RevInCB(dls.vars)] if args.revin else []
