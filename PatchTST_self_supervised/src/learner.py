@@ -175,7 +175,10 @@ class Learner(GetAttr):
         # forward
         pred = self.model_forward()
         # compute loss
-        loss = self.loss_func(pred, self.yb)
+        if getattr(self.loss_func, 'requires_volatility', False):
+            loss = self.loss_func(pred, self.yb, x_for_volatility=self.yb)
+        else:
+            loss = self.loss_func(pred, self.yb)
         return pred, loss
 
     def model_forward(self):
@@ -194,8 +197,11 @@ class Learner(GetAttr):
         # forward
         pred = self.model_forward()
         # compute loss
-        loss = self.loss_func(pred, self.yb)
-        return pred, loss                                     
+        if getattr(self.loss_func, 'requires_volatility', False):
+            loss = self.loss_func(pred, self.yb, x_for_volatility=self.yb)
+        else:
+            loss = self.loss_func(pred, self.yb)
+        return pred, loss
 
 
     def _do_batch_predict(self):   

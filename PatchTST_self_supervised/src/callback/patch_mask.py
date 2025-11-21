@@ -30,7 +30,7 @@ class PatchCB(Callback):
 
 class PatchMaskCB(Callback):
     def __init__(self, patch_len, stride, mask_ratio,
-                        mask_when_pred:bool=False):
+                        mask_when_pred:bool=False, loss_func=None):
         """
         Callback used to perform the pretext task of reconstruct the original data after a binary mask has been applied.
         Args:
@@ -40,12 +40,17 @@ class PatchMaskCB(Callback):
         """
         self.patch_len = patch_len
         self.stride = stride
-        self.mask_ratio = mask_ratio        
+        self.mask_ratio = mask_ratio
+        self.loss_func = loss_func
 
     def before_fit(self):
         # overwrite the predefined loss function
-        self.learner.loss_func = self._loss        
-        device = self.learner.device       
+        if self.loss_func is None:
+            self.loss_func = torch.nn.MSELoss(reduction='none')
+        elif getattr(self.loss_func, 'reduction', None) != 'none' and not getattr(self.loss_func, 'requires_volatility', False):
+            self.loss_func.reduction = 'none'
+        self.learner.loss_func = self._loss
+        device = self.learner.device
  
     def before_forward(self): self.patch_masking()
         
@@ -64,9 +69,12 @@ class PatchMaskCB(Callback):
         preds:   [bs x num_patch x n_vars x patch_len]
         targets: [bs x num_patch x n_vars x patch_len] 
         """
-        loss = (preds - target) ** 2
-        loss = loss.mean(dim=-1)
-        loss = (loss * self.mask).sum() / self.mask.sum()
+        if getattr(self.loss_func, 'requires_volatility', False):
+            loss_map = self.loss_func(preds, target, x_for_volatility=target)
+        else:
+            loss_map = self.loss_func(preds, target)
+        loss_map = loss_map.mean(dim=-1)
+        loss = (loss_map * self.mask).sum() / self.mask.sum()
         return loss
 
 
