@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from torch import optim
 from torch.optim import lr_scheduler
-from utils.losses import FreDFPCALoss, NoiseAdaptiveHybridHuber
+from utils.losses import FreDFLearnableLoss, FreDFPCALoss, NoiseAdaptiveHybridHuber
 
 import os
 import time
@@ -44,8 +44,16 @@ class Exp_Main(Exp_Basic):
         data_set, data_loader = data_provider(self.args, flag)
         return data_set, data_loader
 
-    def _select_optimizer(self):
-        model_optim = optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
+    def _select_optimizer(self, criterion=None):
+        param_groups = [{'params': self.model.parameters()}]
+
+        if criterion is not None:
+            learnable_params = [p for p in criterion.parameters() if p.requires_grad]
+            if learnable_params:
+                lt_lr = self.args.learning_rate * getattr(self.args, 'lft_lr_scale', 1.0)
+                param_groups.append({'params': learnable_params, 'lr': lt_lr})
+
+        model_optim = optim.Adam(param_groups, lr=self.args.learning_rate)
         return model_optim
 
     def _select_criterion(self):
@@ -64,9 +72,24 @@ class Exp_Main(Exp_Basic):
             basis_payload = torch.load(self.args.freq_basis_path, map_location='cpu')
             basis = basis_payload.get('basis', basis_payload)
             basis = basis.float().to(self.device)
-            return FreDFPCALoss(basis=basis, alpha=self.args.lft_alpha)
+            criterion = FreDFPCALoss(basis=basis, alpha=self.args.lft_alpha)
+            return criterion.to(self.device)
 
-        return nn.MSELoss()
+        if loss_name in ['lft_learnable', 'fredf_learnable', 'lft_trainable']:
+            init_basis = None
+            if self.args.freq_basis_path:
+                basis_payload = torch.load(self.args.freq_basis_path, map_location='cpu')
+                init_basis = basis_payload.get('basis', basis_payload).float()
+
+            criterion = FreDFLearnableLoss(
+                T=self.args.pred_len,
+                alpha=self.args.lft_alpha,
+                beta=self.args.lft_beta,
+                init_basis=init_basis,
+            )
+            return criterion.to(self.device)
+
+        return nn.MSELoss().to(self.device)
 
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
@@ -131,17 +154,23 @@ class Exp_Main(Exp_Basic):
         train_steps = len(train_loader)
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
-        model_optim = self._select_optimizer()
         criterion = self._select_criterion()
+        model_optim = self._select_optimizer(criterion)
 
         if self.args.use_amp:
             scaler = torch.cuda.amp.GradScaler()
-            
-        scheduler = lr_scheduler.OneCycleLR(optimizer = model_optim,
-                                            steps_per_epoch = train_steps,
-                                            pct_start = self.args.pct_start,
-                                            epochs = self.args.train_epochs,
-                                            max_lr = self.args.learning_rate)
+
+        max_lr = [self.args.learning_rate] * len(model_optim.param_groups)
+        if len(max_lr) > 1:
+            scaled_lr = self.args.learning_rate * self.args.lft_lr_scale
+            for idx in range(1, len(max_lr)):
+                max_lr[idx] = scaled_lr
+
+        scheduler = lr_scheduler.OneCycleLR(optimizer=model_optim,
+                                            steps_per_epoch=train_steps,
+                                            pct_start=self.args.pct_start,
+                                            epochs=self.args.train_epochs,
+                                            max_lr=max_lr)
 
         for epoch in range(self.args.train_epochs):
             iter_count = 0
@@ -235,7 +264,7 @@ class Exp_Main(Exp_Basic):
             if self.args.lradj != 'TST':
                 adjust_learning_rate(model_optim, scheduler, epoch + 1, self.args)
             else:
-                print('Updating learning rate to {}'.format(scheduler.get_last_lr()[0]))
+                print('Updating learning rate to {}'.format(scheduler.get_last_lr()))
 
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
