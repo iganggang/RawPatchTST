@@ -28,13 +28,20 @@ def adjust_learning_rate(optimizer, scheduler, epoch, args, printout=True):
     elif args.lradj == '6':
         lr_adjust = {epoch: args.learning_rate if epoch < 5 else args.learning_rate*0.1}  
     elif args.lradj == 'TST':
-        lr_adjust = {epoch: scheduler.get_last_lr()[0]}
-    
-    if epoch in lr_adjust.keys():
-        lr = lr_adjust[epoch]
-        for param_group in optimizer.param_groups:
+        lr_values = scheduler.get_last_lr()
+        for idx, param_group in enumerate(optimizer.param_groups):
+            lr = lr_values[idx] if idx < len(lr_values) else lr_values[0]
             param_group['lr'] = lr
-        if printout: print('Updating learning rate to {}'.format(lr))
+        if printout: print('Updating learning rate to {}'.format(lr_values))
+        return
+
+    if epoch in lr_adjust.keys():
+        base_lr = lr_adjust[epoch]
+        scale = getattr(args, 'lft_lr_scale', 1.0)
+        for idx, param_group in enumerate(optimizer.param_groups):
+            lr = base_lr if idx == 0 else base_lr * scale
+            param_group['lr'] = lr
+        if printout: print('Updating learning rate to {}'.format(base_lr))
 
 
 class EarlyStopping:
