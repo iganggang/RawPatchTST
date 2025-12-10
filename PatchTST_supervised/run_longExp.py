@@ -83,6 +83,8 @@ if __name__ == '__main__':
     parser.add_argument('--loss', type=str, default='mse', help='loss function')
     parser.add_argument('--vahuber_delta', type=float, default=1.0, help='delta for volatility-adaptive Huber loss')
     parser.add_argument('--vahuber_gamma', type=float, default=1.0, help='gamma for volatility-adaptive weighting')
+    parser.add_argument('--freq_basis_path', type=str, default='', help='path to FreDF-PCA basis for LFT loss')
+    parser.add_argument('--lft_alpha', type=float, default=0.5, help='frequency/time weighting for LFT loss')
     parser.add_argument('--lradj', type=str, default='type3', help='adjust learning rate')
     parser.add_argument('--pct_start', type=float, default=0.3, help='pct_start')
     parser.add_argument('--use_amp', action='store_true', help='use automatic mixed precision training', default=False)

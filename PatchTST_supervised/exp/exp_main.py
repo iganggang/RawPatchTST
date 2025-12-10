@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from torch import optim
 from torch.optim import lr_scheduler
-from utils.losses import NoiseAdaptiveHybridHuber
+from utils.losses import FreDFPCALoss, NoiseAdaptiveHybridHuber
 
 import os
 import time
@@ -49,11 +49,23 @@ class Exp_Main(Exp_Basic):
         return model_optim
 
     def _select_criterion(self):
-        if str(self.args.loss).lower() in ['vahuber', 'volatility_huber', 'adaptive_huber']:
+        loss_name = str(self.args.loss).lower()
+
+        if loss_name in ['vahuber', 'volatility_huber', 'adaptive_huber']:
             return NoiseAdaptiveHybridHuber(
                 delta=self.args.vahuber_delta,
                 gamma=self.args.vahuber_gamma,
             )
+
+        if loss_name in ['lft', 'fredf_pca']:
+            if not self.args.freq_basis_path:
+                raise ValueError('freq_basis_path must be provided when using LFT loss.')
+
+            basis_payload = torch.load(self.args.freq_basis_path, map_location='cpu')
+            basis = basis_payload.get('basis', basis_payload)
+            basis = basis.float().to(self.device)
+            return FreDFPCALoss(basis=basis, alpha=self.args.lft_alpha)
+
         return nn.MSELoss()
 
     def vali(self, vali_data, vali_loader, criterion):
