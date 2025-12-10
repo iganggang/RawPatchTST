@@ -2,6 +2,24 @@ import torch
 import torch.nn as nn
 
 
+def project_to_basis(y: torch.Tensor, basis: torch.Tensor) -> torch.Tensor:
+    """Project batch of sequences onto an orthonormal basis.
+
+    Args:
+        y: Input tensor shaped ``[B, T, C]``.
+        basis: Orthonormal basis with shape ``[T, T]`` whose rows are basis functions.
+    """
+    bsz, time_steps, channels = y.shape
+    if basis.shape[0] != basis.shape[1] or basis.shape[0] != time_steps:
+        raise ValueError(
+            f"Basis shape {tuple(basis.shape)} is incompatible with series length {time_steps}."
+        )
+
+    y_flat = y.permute(0, 2, 1).reshape(-1, time_steps)
+    z_flat = y_flat @ basis.t()
+    return z_flat.reshape(bsz, channels, time_steps).permute(0, 2, 1)
+
+
 def huber_loss(residual: torch.Tensor, delta: float = 1.0) -> torch.Tensor:
     """Element-wise Huber loss.
 
@@ -56,3 +74,46 @@ class NoiseAdaptiveHybridHuber(nn.Module):
         if self.reduction == 'none':
             return loss
         return loss.mean()
+
+
+class FreDFPCALoss(nn.Module):
+    """Linear Frequency-domain Transformation (LFT) loss using a PCA basis.
+
+    Combines frequency-domain L1 distance computed after projecting onto an
+    offline PCA basis with a time-domain MSE term.
+    """
+
+    def __init__(self, basis: torch.Tensor, alpha: float = 0.5, reduction: str = 'mean'):
+        super().__init__()
+        if basis.ndim != 2 or basis.shape[0] != basis.shape[1]:
+            raise ValueError('PCA basis must be a square matrix of shape [T, T].')
+        if not (0.0 <= alpha <= 1.0):
+            raise ValueError('alpha must lie in [0, 1].')
+
+        self.register_buffer('basis', basis)
+        self.alpha = alpha
+        self.reduction = reduction
+
+    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
+        if y_pred.shape != y_true.shape:
+            raise ValueError(
+                f'Mismatched shapes for LFT loss: {tuple(y_pred.shape)} vs {tuple(y_true.shape)}.'
+            )
+
+        z_pred = project_to_basis(y_pred, self.basis)
+        z_true = project_to_basis(y_true, self.basis)
+
+        freq_term = torch.abs(z_pred - z_true)
+        time_term = (y_pred - y_true) ** 2
+
+        if self.reduction == 'sum':
+            freq_loss = freq_term.sum()
+            time_loss = time_term.sum()
+        elif self.reduction == 'none':
+            freq_loss = freq_term
+            time_loss = time_term
+        else:
+            freq_loss = freq_term.mean()
+            time_loss = time_term.mean()
+
+        return self.alpha * freq_loss + (1.0 - self.alpha) * time_loss
