@@ -33,7 +33,12 @@ class LearnableTransform(nn.Module):
             )
 
         Y_flat = Y.permute(0, 2, 1).reshape(-1, time_steps)
-        Z_flat = Y_flat @ self.B.t()
+        # Ensure the transform matrix lives on the same device as the input.
+        B = self.B
+        if B.device != Y_flat.device:
+            B = B.to(Y_flat.device)
+
+        Z_flat = Y_flat @ B.t()
         return Z_flat.reshape(batch_size, channels, time_steps).permute(0, 2, 1)
 
 
