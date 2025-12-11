@@ -42,6 +42,35 @@ class LearnableTransform(nn.Module):
         return Z_flat.reshape(batch_size, channels, time_steps).permute(0, 2, 1)
 
 
+def real_fft_basis(T: int, device: torch.device | None = None, dtype: torch.dtype | None = None) -> torch.Tensor:
+    """Build an orthonormal real FFT basis of shape ``[T, T]``.
+
+    The first vector is the DC component followed by cosine/sine pairs.
+    """
+
+    dtype = dtype or torch.float32
+    t = torch.arange(T, device=device, dtype=dtype)
+    basis = torch.zeros((T, T), device=device, dtype=dtype)
+
+    # DC term
+    basis[0] = 1.0 / torch.sqrt(torch.tensor(float(T), device=device, dtype=dtype))
+
+    idx = 1
+    max_k = (T - 1) // 2
+    scale = torch.sqrt(torch.tensor(2.0 / float(T), device=device, dtype=dtype))
+    for k in range(1, max_k + 1):
+        angle = 2.0 * torch.pi * k * t / float(T)
+        basis[idx] = scale * torch.cos(angle)
+        basis[idx + 1] = scale * torch.sin(angle)
+        idx += 2
+
+    # Handle Nyquist component for even T
+    if idx < T:
+        basis[idx] = scale * torch.cos(torch.pi * t)
+
+    return basis
+
+
 def orthogonal_regularizer(B: torch.Tensor) -> torch.Tensor:
     """Penalize deviation from orthogonality."""
 
@@ -116,6 +145,27 @@ class NoiseAdaptiveHybridHuber(nn.Module):
         huber_term = huber_loss(residual, delta=self.delta)
 
         loss = weights * mse_term + (1.0 - weights) * huber_term
+
+        if self.reduction == 'sum':
+            return loss.sum()
+        if self.reduction == 'none':
+            return loss
+        return loss.mean()
+
+
+class TimeHuberLoss(nn.Module):
+    """Standard Huber loss computed in the time domain."""
+
+    requires_volatility = False
+
+    def __init__(self, delta: float = 1.0, reduction: str = 'mean'):
+        super().__init__()
+        self.delta = delta
+        self.reduction = reduction
+
+    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
+        residual = y_pred - y_true
+        loss = huber_loss(residual, delta=self.delta)
 
         if self.reduction == 'sum':
             return loss.sum()

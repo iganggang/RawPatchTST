@@ -9,7 +9,13 @@ import torch
 import torch.nn as nn
 from torch import optim
 from torch.optim import lr_scheduler
-from utils.losses import FreDFLearnableLoss, FreDFPCALoss, NoiseAdaptiveHybridHuber
+from utils.losses import (
+    FreDFLearnableLoss,
+    FreDFPCALoss,
+    NoiseAdaptiveHybridHuber,
+    TimeHuberLoss,
+    real_fft_basis,
+)
 
 import os
 import time
@@ -65,7 +71,10 @@ class Exp_Main(Exp_Basic):
                 gamma=self.args.vahuber_gamma,
             )
 
-        if loss_name in ['lft', 'fredf_pca']:
+        if loss_name in ['huber', 'time_huber']:
+            return TimeHuberLoss(delta=self.args.huber_delta).to(self.device)
+
+        if loss_name in ['lft', 'fredf_pca', 'fredf_pca_fixed']:
             if not self.args.freq_basis_path:
                 raise ValueError('freq_basis_path must be provided when using LFT loss.')
 
@@ -75,7 +84,22 @@ class Exp_Main(Exp_Basic):
             criterion = FreDFPCALoss(basis=basis, alpha=self.args.lft_alpha)
             return criterion.to(self.device)
 
-        if loss_name in ['lft_learnable', 'fredf_learnable', 'lft_trainable']:
+        if loss_name in ['fredf_fft_fixed', 'fredf_fft']:
+            basis = real_fft_basis(self.args.pred_len, device=self.device)
+            criterion = FreDFPCALoss(basis=basis, alpha=self.args.lft_alpha)
+            return criterion.to(self.device)
+
+        if loss_name in ['fredf_fft_learnable', 'fredf_fft_trainable']:
+            fft_basis = real_fft_basis(self.args.pred_len)
+            criterion = FreDFLearnableLoss(
+                T=self.args.pred_len,
+                alpha=self.args.lft_alpha,
+                beta=self.args.lft_beta,
+                init_basis=fft_basis,
+            )
+            return criterion.to(self.device)
+
+        if loss_name in ['lft_learnable', 'fredf_learnable', 'lft_trainable', 'fredf_pca_learnable']:
             init_basis = None
             if self.args.freq_basis_path:
                 basis_payload = torch.load(self.args.freq_basis_path, map_location='cpu')
