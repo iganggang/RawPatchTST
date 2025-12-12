@@ -50,6 +50,12 @@ class Exp_Main(Exp_Basic):
         data_set, data_loader = data_provider(self.args, flag)
         return data_set, data_loader
 
+    def _log_basis_delta(self, criterion, stage: str):
+        if isinstance(criterion, FreDFLearnableLoss):
+            with torch.no_grad():
+                delta = criterion.transform.basis_delta().item()
+            print(f'|B - B0|_F ({stage}) = {delta:.3e}')
+
     def _select_optimizer(self, criterion=None):
         param_groups = [{'params': self.model.parameters()}]
 
@@ -179,6 +185,7 @@ class Exp_Main(Exp_Basic):
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
         criterion = self._select_criterion()
+        self.criterion = criterion
         model_optim = self._select_optimizer(criterion)
 
         if self.args.use_amp:
@@ -293,10 +300,14 @@ class Exp_Main(Exp_Basic):
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
 
+        self._log_basis_delta(criterion, 'train')
+
         return self.model
 
     def test(self, setting, test=0):
         test_data, test_loader = self._get_data(flag='test')
+
+        self._log_basis_delta(getattr(self, 'criterion', None), 'test')
         
         if test:
             print('loading model')
