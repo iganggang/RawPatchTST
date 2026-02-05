@@ -14,7 +14,17 @@ class LearnableTransform(nn.Module):
             if init_B.shape != (T, T):
                 raise ValueError(f'Expected init_B to have shape {(T, T)}, got {tuple(init_B.shape)}.')
             B = init_B.clone()
+        # Keep a copy of the initialization for diagnostics.
+        # This buffer tracks the reference basis without participating in training
+        # and is omitted from state_dict checkpoints to avoid unexpected size
+        # changes.
+        self.register_buffer('B0', B.clone(), persistent=False)
         self.B = nn.Parameter(B)
+
+    def basis_delta(self) -> torch.Tensor:
+        """Return the Frobenius norm between the learned basis and its init."""
+
+        return torch.norm(self.B - self.B0, p='fro')
 
     def forward(self, Y: torch.Tensor) -> torch.Tensor:
         """Apply the learnable transform to a batch of sequences.
