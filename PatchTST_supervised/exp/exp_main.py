@@ -115,6 +115,51 @@ class Exp_Main(Exp_Basic):
 
         return nn.MSELoss().to(self.device)
 
+    def _is_learnable_lft_loss(self) -> bool:
+        loss_name = str(self.args.loss).lower()
+        return loss_name in [
+            'fredf_fft_learnable', 'fredf_fft_trainable',
+            'lft_learnable', 'fredf_learnable', 'lft_trainable', 'fredf_pca_learnable',
+        ]
+
+    def _debug_learnable_basis(self, criterion, model_optim, stage):
+        """Print one-step diagnostics for learnable LFT basis updates."""
+
+        debug_enabled = getattr(self.args, 'debug_lft_basis', False) or self._is_learnable_lft_loss()
+        if not debug_enabled:
+            return
+
+        has_learnable_basis = hasattr(criterion, 'transform') and hasattr(criterion.transform, 'B')
+        if not has_learnable_basis:
+            if not hasattr(self, '_warned_non_lft_debug'):
+                print(
+                    '[debug_lft_basis] No learnable basis B found in current criterion. '
+                    'Use a learnable LFT loss (e.g. fredf_pca_learnable / fredf_fft_learnable).'
+                )
+                self._warned_non_lft_debug = True
+            return
+
+        B = criterion.transform.B
+        b_id = id(B)
+        in_optimizer = any(
+            id(p) == b_id
+            for group in model_optim.param_groups
+            for p in group['params']
+        )
+
+        print(f"[{stage}] B requires_grad: {B.requires_grad}")
+        print(f"[{stage}] B in optimizer: {in_optimizer}")
+        print(f"[{stage}] B grad is None: {B.grad is None}")
+        if B.grad is not None:
+            print(f"[{stage}] B grad norm: {B.grad.norm().item()}")
+
+        with torch.no_grad():
+            if not hasattr(self, '_B_snap'):
+                self._B_snap = B.detach().clone()
+            delta = (B - self._B_snap).norm().item()
+            print(f"[{stage}] delta(B) since last snap: {delta}")
+            self._B_snap.copy_(B)
+
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
         self.model.eval()
@@ -263,11 +308,15 @@ class Exp_Main(Exp_Basic):
 
                 if self.args.use_amp:
                     scaler.scale(loss).backward()
+                    self._debug_learnable_basis(criterion, model_optim, stage='after backward')
                     scaler.step(model_optim)
                     scaler.update()
+                    self._debug_learnable_basis(criterion, model_optim, stage='after step')
                 else:
                     loss.backward()
+                    self._debug_learnable_basis(criterion, model_optim, stage='after backward')
                     model_optim.step()
+                    self._debug_learnable_basis(criterion, model_optim, stage='after step')
                     
                 if self.args.lradj == 'TST':
                     adjust_learning_rate(model_optim, scheduler, epoch + 1, self.args, printout=False)
