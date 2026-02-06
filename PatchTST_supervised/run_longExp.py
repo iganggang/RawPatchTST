@@ -89,6 +89,8 @@ if __name__ == '__main__':
     parser.add_argument('--lft_alpha', type=float, default=0.5, help='frequency/time weighting for LFT loss')
     parser.add_argument('--lft_beta', type=float, default=1e-2, help='orthogonality weight for learnable LFT loss')
     parser.add_argument('--lft_lr_scale', type=float, default=0.1, help='relative lr for learnable LFT basis')
+    parser.add_argument('--debug_lft_basis', action='store_true', default=False,
+                        help='force one-step diagnostics for basis B (learnable LFT losses are auto-debugged)')
     parser.add_argument('--lradj', type=str, default='type3', help='adjust learning rate')
     parser.add_argument('--pct_start', type=float, default=0.3, help='pct_start')
     parser.add_argument('--use_amp', action='store_true', help='use automatic mixed precision training', default=False)
