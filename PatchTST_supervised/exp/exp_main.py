@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 from torch import optim
 from torch.optim import lr_scheduler
+from utils.basis_diagnostics import evaluate_basis_change
 from utils.losses import (
     FreDFLearnableLoss,
     FreDFPCALoss,
@@ -115,6 +116,67 @@ class Exp_Main(Exp_Basic):
 
         return nn.MSELoss().to(self.device)
 
+    def _is_learnable_lft_loss(self) -> bool:
+        loss_name = str(self.args.loss).lower()
+        return loss_name in [
+            'fredf_fft_learnable', 'fredf_fft_trainable',
+            'lft_learnable', 'fredf_learnable', 'lft_trainable', 'fredf_pca_learnable',
+        ]
+
+    def _debug_learnable_basis(self, criterion, model_optim, stage):
+        """Print one-step diagnostics for learnable LFT basis updates."""
+
+        debug_enabled = getattr(self.args, 'debug_lft_basis', False) or self._is_learnable_lft_loss()
+        if not debug_enabled:
+            return
+
+        has_learnable_basis = hasattr(criterion, 'transform') and hasattr(criterion.transform, 'B')
+        if not has_learnable_basis:
+            if not hasattr(self, '_warned_non_lft_debug'):
+                print(
+                    '[debug_lft_basis] No learnable basis B found in current criterion. '
+                    'Use a learnable LFT loss (e.g. fredf_pca_learnable / fredf_fft_learnable).'
+                )
+                self._warned_non_lft_debug = True
+            return
+
+        B = criterion.transform.B
+        b_id = id(B)
+        in_optimizer = any(
+            id(p) == b_id
+            for group in model_optim.param_groups
+            for p in group['params']
+        )
+
+        print(f"[{stage}] B requires_grad: {B.requires_grad}")
+        print(f"[{stage}] B in optimizer: {in_optimizer}")
+        print(f"[{stage}] B grad is None: {B.grad is None}")
+        if B.grad is not None:
+            print(f"[{stage}] B grad norm: {B.grad.norm().item()}")
+
+        with torch.no_grad():
+            if not hasattr(self, '_B_snap'):
+                self._B_snap = B.detach().clone()
+            delta = (B - self._B_snap).norm().item()
+            print(f"[{stage}] delta(B) since last snap: {delta}")
+            self._B_snap.copy_(B)
+
+
+    def _capture_basis_B0(self, criterion):
+        if hasattr(criterion, 'transform') and hasattr(criterion.transform, 'B'):
+            self._basis_B0 = criterion.transform.B.detach().clone()
+
+    def _report_basis_change(self, criterion, stage: str):
+        if not hasattr(self, '_basis_B0'):
+            return None
+        if not hasattr(criterion, 'transform') or not hasattr(criterion.transform, 'B'):
+            return None
+
+        print(f'[basis-change] stage={stage}')
+        report = evaluate_basis_change(self._basis_B0, criterion.transform.B)
+        self._basis_change_report = report
+        return report
+
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
         self.model.eval()
@@ -179,6 +241,7 @@ class Exp_Main(Exp_Basic):
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
         criterion = self._select_criterion()
+        self._capture_basis_B0(criterion)
         model_optim = self._select_optimizer(criterion)
 
         if self.args.use_amp:
@@ -186,7 +249,7 @@ class Exp_Main(Exp_Basic):
 
         max_lr = [self.args.learning_rate] * len(model_optim.param_groups)
         if len(max_lr) > 1:
-            scaled_lr = self.args.learning_rate * self.args.lft_lr_scale
+            scaled_lr = self.args.learning_rate * getattr(self.args, 'lft_lr_scale', 1.0)
             for idx in range(1, len(max_lr)):
                 max_lr[idx] = scaled_lr
 
@@ -263,11 +326,15 @@ class Exp_Main(Exp_Basic):
 
                 if self.args.use_amp:
                     scaler.scale(loss).backward()
+                    self._debug_learnable_basis(criterion, model_optim, stage='after backward')
                     scaler.step(model_optim)
                     scaler.update()
+                    self._debug_learnable_basis(criterion, model_optim, stage='after step')
                 else:
                     loss.backward()
+                    self._debug_learnable_basis(criterion, model_optim, stage='after backward')
                     model_optim.step()
+                    self._debug_learnable_basis(criterion, model_optim, stage='after step')
                     
                 if self.args.lradj == 'TST':
                     adjust_learning_rate(model_optim, scheduler, epoch + 1, self.args, printout=False)
@@ -292,6 +359,7 @@ class Exp_Main(Exp_Basic):
 
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
+        self._report_basis_change(criterion, stage='train_end_best_ckpt_loaded')
 
         return self.model
 
@@ -363,13 +431,9 @@ class Exp_Main(Exp_Basic):
         if self.args.test_flop:
             test_params_flop((batch_x.shape[1],batch_x.shape[2]))
             exit()
-        preds = np.array(preds)
-        trues = np.array(trues)
-        inputx = np.array(inputx)
-
-        preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
-        trues = trues.reshape(-1, trues.shape[-2], trues.shape[-1])
-        inputx = inputx.reshape(-1, inputx.shape[-2], inputx.shape[-1])
+        preds = np.concatenate(preds, axis=0)
+        trues = np.concatenate(trues, axis=0)
+        inputx = np.concatenate(inputx, axis=0)
 
         # result save
         folder_path = './results/' + setting + '/'
@@ -433,8 +497,7 @@ class Exp_Main(Exp_Basic):
                 pred = outputs.detach().cpu().numpy()  # .squeeze()
                 preds.append(pred)
 
-        preds = np.array(preds)
-        preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
+        preds = np.concatenate(preds, axis=0)
 
         # result save
         folder_path = './results/' + setting + '/'
